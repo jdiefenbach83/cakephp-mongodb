@@ -1091,7 +1091,7 @@ class MongodbSource extends DboSource {
 		$return = array();
 
 		$this->_prepareLogQuery($Model); // just sets a timer
-        $table = $this->fullTableName($Model);
+                $table = $this->fullTableName($Model);
 		if (empty($modify)) {
 			if ($Model->findQueryType === 'count' && $fields == array('count' => true)) {
 				$cursor = $this->_db
@@ -1160,7 +1160,7 @@ class MongodbSource extends DboSource {
 		}
 
 		if ($Model->findQueryType === 'count') {
-			return array(array($Model->alias => array('count' => $return->count())));
+			$return = array(array($Model->alias => array('count' => $return->count())));
 		}
 
 		if (is_object($return)) {
@@ -1177,7 +1177,135 @@ class MongodbSource extends DboSource {
 				}
 				$_return[][$Model->alias] = $mongodata;
 			}
-			return $_return;
+			$return = $_return;
+		}
+		
+                //retrieving relation data                
+		if ($recursive === null && isset($query['recursive'])) {
+			$recursive = $query['recursive'];
+		}
+		if (!is_null($recursive)) {
+			if(is_array($recursive) && count($recursive) === 0) {
+				$recursive = 0;
+			}
+			$_recursive = $Model->recursive;
+			$Model->recursive = $recursive;
+		}
+		$_associations = $Model->getAssociated();
+		if ($Model->recursive == -1) {
+			$_associations = array();
+		} else if ($Model->recursive == 0) {
+			unset($_associations[2], $_associations[3]);
+		}
+		if ($Model->recursive > -1) {
+			foreach ($_associations as $type) {
+				foreach ($Model->{$type} as $assoc => $assocData) {
+					$linkModel =& $Model->{$assoc};
+					//get id list for conditions
+					$idList = array();
+					$keyName = $Model->primaryKey;
+					if($type === 'belongsTo') {
+						$keyName = $assocData['foreignKey'];
+					}
+					foreach($return as $modelData) {
+						if(!empty($modelData[$Model->alias])) {
+							$idList[] = $modelData[$Model->alias][$keyName];
+						}
+					}
+					switch($type) {
+						case'hasMany':
+							$hasManyResult = null;
+							$cond = array($assocData['foreignKey'] => array('$in' => $idList));
+							if(is_array($assocData['conditions'])) {
+								$cond = array_merge($cond, $assocData['conditions']);
+							}
+							$params = array(
+									'conditions' => $cond,
+									'recursive' => $recursive - 1,
+									);
+							$hasManyResult = $linkModel->find('all', $params);
+							if(!empty($hasManyResult)) {
+								//aggregate retrieving data using array key(foreigin key _id)
+								$hasManyResultSet = array();
+								foreach($hasManyResult as $key => $val) {
+									$foreignKey = $val[$linkModel->alias][$assocData['foreignKey']];
+									if(!empty($foreignKey)) {
+										$hasManyResultSet[$foreignKey][] = $val[$linkModel->alias];
+									}
+								}
+								//set relational retrieving data to return data
+								foreach($return as $key => $val) {
+									if(!empty($hasManyResultSet[ $val[$Model->alias][$Model->primaryKey] ])) {
+										$return[$key][$Model->alias][$linkModel->alias] = $hasManyResultSet[ $val[$Model->alias][$Model->primaryKey] ];
+									} else {
+										$return[$key][$Model->alias][$linkModel->alias] = array();
+									}
+								}
+							}
+							break;
+						case'hasOne':
+							$hasOneResult = null;
+							$cond = array($assocData['foreignKey'] => array('$in' => $idList));
+							if(is_array($assocData['conditions'])) {
+								$cond = array_merge($cond, $assocData['conditions']);
+							}
+							$params = array(
+									'conditions' => $cond,
+									'recursive' => $recursive - 1,
+									);
+							$hasOneResult = $linkModel->find('all', $params);
+							if(!empty($hasOneResult)) {
+								//aggregate retrieving data using array key(foreigin key _id)
+								$hasOneResultSet = array();
+								foreach($hasOneResult as $key => $val) {
+									$foreignKey = $val[$linkModel->alias][$assocData['foreignKey']];
+									if(!empty($foreignKey)) {
+										$hasOneResultSet[$foreignKey] = $val[$linkModel->alias];
+									}
+								}
+								//set relational retrieving data to return data
+								foreach($return as $key => $val) {
+									if(!empty($hasOneResultSet[ $val[$Model->alias][$Model->primaryKey] ])) {
+										$return[$key][$Model->alias][$linkModel->alias] = $hasOneResultSet[ $val[$Model->alias][$Model->primaryKey] ];
+									} else {
+										$return[$key][$Model->alias][$linkModel->alias] = array();
+									}
+								}
+							}
+							break;
+						case'belongsTo':
+							$belongsToResult = null;
+							$cond = array($linkModel->primaryKey => array('$in' => $idList));
+							if(is_array($assocData['conditions'])) {
+								$cond = array_merge($cond, $assocData['conditions']);
+							}
+							$params = array(
+									'conditions' => $cond,
+									'recursive' => $recursive - 1,
+									);
+							$belongsToResult = $linkModel->find('all', $params);
+							if(!empty($belongsToResult)) {
+								//aggregate retrieving data using array key(foreigin key _id)
+								$belongsToResultSet = array();
+								foreach($belongsToResult as $key => $val) {
+									$belongsToResultSet[ $val[$linkModel->alias][$linkModel->primaryKey] ] = $val[$linkModel->alias];
+								}
+								//set relational retrieving data to return data
+								foreach($return as $key => $val) {
+									if(!empty($belongsToResultSet[ $val[$Model->alias][$assocData['foreignKey']] ])) {
+										$return[$key][$linkModel->alias] = $belongsToResultSet[ $val[$Model->alias][$assocData['foreignKey']] ];
+									} else {
+										$return[$key][$linkModel->alias] = array();
+									}
+								}
+							}
+							break;
+					}
+				}
+			}
+		}
+		if (!is_null($recursive)) {
+			$Model->recursive = $_recursive;
 		}
 		return $return;
 	}
@@ -1316,7 +1444,7 @@ class MongodbSource extends DboSource {
  * @return mixed Prepared value or array of values.
  * @access public
  */
-	public function value($data, $column = null) {
+	public function value($data, $column = null, $null = true) {
 		if (is_array($data) && !empty($data)) {
 			return array_map(
 				array(&$this, 'value'),
